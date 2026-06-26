@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Threat Hunter Dashboard</title>
+    <script src="https://cdn.socket.io/4.5.0/socket.io.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .threat-item {
+            animation: slideIn 0.3s ease;
+        }
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        .blink {
+            animation: blink 1s infinite;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+        .status-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-dot.active {
+            background: #34D399;
+            box-shadow: 0 0 10px #34D399;
+        }
+        .status-dot.inactive {
+            background: #EF4444;
+            box-shadow: 0 0 10px #EF4444;
+        }
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1F2937;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4B5563;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #6B7280;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100">
+    <div class="container mx-auto p-4 max-w-7xl">
+        <!-- Header -->
+        <header class="flex justify-between items-center mb-6 border-b border-gray-700 pb-4">
+            <div>
+                <h1 class="text-2xl font-bold text-blue-400">
+                    <i class="fas fa-shield-alt"></i> AI Threat Hunter
+                </h1>
+                <p class="text-gray-400 text-sm">Real-time network threat detection</p>
+            </div>
+            <div class="flex items-center gap-4">
+                <span class="flex items-center text-sm">
+                    <span class="status-dot active" id="statusDot"></span>
+                    <span id="statusText">Active</span>
+                </span>
+                <button onclick="clearThreats()" class="bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm transition">
+                    <i class="fas fa-trash"></i> Clear
+                </button>
+            </div>
+        </header>
+
+        <!-- Stats -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Total Packets</div>
+                <div class="text-2xl font-bold text-blue-400" id="totalPackets">0</div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Threats Detected</div>
+                <div class="text-2xl font-bold text-red-500" id="totalThreats">0</div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Threat Rate</div>
+                <div class="text-2xl font-bold text-yellow-400" id="threatRate">0%</div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Status</div>
+                <div class="text-lg font-bold text-green-400">
+                    <i class="fas fa-check-circle"></i> Monitoring
+                </div>
+            </div>
+        </div>
+
+        <!-- Chart -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+            <div class="lg:col-span-2 bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <h3 class="text-sm text-gray-400 mb-2">Threat Activity</h3>
+                <canvas id="threatChart" height="80"></canvas>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <h3 class="text-sm text-gray-400 mb-2">Top Threat Types</h3>
+                <div id="threatTypes" class="space-y-2">
+                    <p class="text-gray-500 text-sm">No data yet</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recent Threats -->
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="flex justify-between items-center mb-3">
+                <h3 class="text-sm text-gray-400">
+                    <i class="fas fa-exclamation-triangle text-red-500"></i> Recent Threats
+                </h3>
+                <span class="text-xs text-gray-500" id="threatCount">0 threats</span>
+            </div>
+            <div id="threatList" class="space-y-1 max-h-80 overflow-y-auto">
+                <div class="text-gray-500 text-sm">Waiting for threats...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Socket connection
+        const socket = io();
+        let threatChart = null;
+        let threatData = [];
+        let packetCount = 0;
+        let threatCount = 0;
+        const threatTypes = {};
+
+        // Initialize chart
+        function initChart() {
+            const ctx = document.getElementById('threatChart').getContext('2d');
+            threatChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Threats',
+                        data: [],
+                        borderColor: '#EF4444',
+                        backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { labels: { color: '#9CA3AF' } }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                            ticks: { color: '#9CA3AF', max: 20 }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                            ticks: { color: '#9CA3AF', stepSize: 1 }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Add threat to UI
+        function addThreat(data) {
+            threatCount++;
+            threatData.push(data);
+            
+            // Update stats
+            document.getElementById('totalThreats').textContent = threatCount;
+            
+            // Track threat types
+            const proto = data.protocol || 'Other';
+            threatTypes[proto] = (threatTypes[proto] || 0) + 1;
+            updateThreatTypes();
+            
+            // Update chart
+            const now = new Date();
+            const label = now.getHours() + ':' + String(now.getMinutes()).padStart(2, '0');
+            threatChart.data.labels.push(label);
+            threatChart.data.datasets[0].data.push(1);
+            if (threatChart.data.labels.length > 30) {
+                threatChart.data.labels.shift();
+                threatChart.data.datasets[0].data.shift();
+            }
+            threatChart.update();
+            
+            // Add to list
+            const list = document.getElementById('threatList');
+            if (list.children.length === 1 && list.children[0].textContent.includes('Waiting')) {
+                list.innerHTML = '';
+            }
+            
+            const item = document.createElement('div');
+            item.className = 'threat-item bg-red-900/20 border border-red-700/30 rounded px-3 py-2 flex justify-between items-center text-sm';
+            item.innerHTML = `
+                <div>
+                    <span class="text-red-400 font-bold">THREAT</span>
+                    <span class="text-gray-300 ml-2">${data.summary || 'Unknown'}</span>
+                </div>
+                <div class="flex items-center gap-3 text-xs">
+                    <span class="text-gray-400">${data.protocol || 'Unknown'}</span>
+                    <span class="text-gray-500">${data.timestamp || ''}</span>
+                </div>
+            `;
+            list.prepend(item);
+            
+            // Limit list
+            while (list.children.length > 50) {
+                list.removeChild(list.lastChild);
+            }
+            
+            document.getElementById('threatCount').textContent = threatCount + ' threats';
+            updateRate();
+        }
+
+        // Update threat types
+        function updateThreatTypes() {
+            const container = document.getElementById('threatTypes');
+            container.innerHTML = '';
+            const sorted = Object.entries(threatTypes).sort((a, b) => b[1] - a[1]);
+            sorted.slice(0, 5).forEach(([type, count]) => {
+                const div = document.createElement('div');
+                div.className = 'flex justify-between text-sm';
+                div.innerHTML = `
+                    <span class="text-gray-300">${type}</span>
+                    <span class="text-gray-400">${count}</span>
+                `;
+                container.appendChild(div);
+            });
+            if (sorted.length === 0) {
+                container.innerHTML = '<p class="text-gray-500 text-sm">No data yet</p>';
+            }
+        }
+
+        // Update threat rate
+        function updateRate() {
+            const total = parseInt(document.getElementById('totalPackets').textContent) || 1;
+            const rate = Math.round((threatCount / total) * 100);
+            document.getElementById('threatRate').textContent = rate + '%';
+        }
+
+        // Clear threats
+        function clearThreats() {
+            if (confirm('Clear all threats?')) {
+                fetch('/api/clear')
+                    .then(() => {
+                        threatCount = 0;
+                        threatData = [];
+                        Object.keys(threatTypes).forEach(key => delete threatTypes[key]);
+                        document.getElementById('totalThreats').textContent = '0';
+                        document.getElementById('threatList').innerHTML = '<div class="text-gray-500 text-sm">Waiting for threats...</div>';
+                        document.getElementById('threatCount').textContent = '0 threats';
+                        document.getElementById('threatRate').textContent = '0%';
+                        threatChart.data.labels = [];
+                        threatChart.data.datasets[0].data = [];
+                        threatChart.update();
+                        updateThreatTypes();
+                    });
+            }
+        }
+
+        // Socket events
+        socket.on('connect', () => {
+            document.getElementById('statusText').textContent = 'Active';
+            document.getElementById('statusDot').className = 'status-dot active';
+        });
+
+        socket.on('disconnect', () => {
+            document.getElementById('statusText').textContent = 'Inactive';
+            document.getElementById('statusDot').className = 'status-dot inactive';
+        });
+
+        socket.on('threat_alert', (data) => {
+            addThreat(data);
+            // Flash alert
+            document.getElementById('threatList').className = 'space-y-1 max-h-80 overflow-y-auto';
+        });
+
+        // Load stats
+        fetch('/api/stats')
+            .then(response => response.json())
+            .then(data => {
+                packetCount = data.total_packets || 0;
+                document.getElementById('totalPackets').textContent = packetCount;
+                if (data.recent_threats) {
+                    data.recent_threats.forEach(t => addThreat(t));
+                }
+            });
+
+        // Init
+        document.addEventListener('DOMContentLoaded', () => {
+            initChart();
+            // Update packet count periodically
+            setInterval(() => {
+                fetch('/api/stats')
+                    .then(response => response.json())
+                    .then(data => {
+                        packetCount = data.total_packets || 0;
+                        document.getElementById('totalPackets').textContent = packetCount;
+                    });
+            }, 5000);
+        });
+    </script>
+</body>
+</html>
